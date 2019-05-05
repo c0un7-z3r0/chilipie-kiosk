@@ -7,8 +7,8 @@ SD_SIZE_REAL=2500 # this is in MB
 SD_SIZE_SAFE=2800 # this is in MB
 SD_SIZE_ZERO=3200 # this is in MB
 PUBKEY="$(cat ~/.ssh/id_rsa.pub)"
-KEYBOARD="us" # or e.g. "fi" for Finnish
-TIMEZONE="Etc/UTC" # or e.g. "Europe/Helsinki"; see https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+KEYBOARD="de" # or e.g. "fi" for Finnish
+TIMEZONE="Europe/Berlin" # or e.g. "Europe/Helsinki"; see https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 
 function working {
   echo -e "\n✨  $1"
