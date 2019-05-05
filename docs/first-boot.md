@@ -1,4 +1,4 @@
-# Welcome to chilipie-kiosk
+# Welcome to %%DASBOARD_NAME%%
 
 **Looks like this is your first boot!**
 

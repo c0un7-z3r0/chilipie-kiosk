@@ -10,11 +10,57 @@ PUBKEY="$(cat ~/.ssh/id_rsa.pub)"
 KEYBOARD="de" # or e.g. "fi" for Finnish
 TIMEZONE="Europe/Berlin" # or e.g. "Europe/Helsinki"; see https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 
+function ask() {
+    # This is a general-purpose function to ask Yes/No questions in Bash, either
+    # with or without a default answer. It keeps repeating the question until it
+    # gets a valid answer.
+    # https://gist.github.com/davejamesmiller/1965569
+    local prompt default reply
+
+    if [ "${2:-}" = "Y" ]; then
+        prompt="Y/n"
+        default=Y
+    elif [ "${2:-}" = "N" ]; then
+        prompt="y/N"
+        default=N
+    else
+        prompt="y/n"
+        default=
+    fi
+
+    while true; do
+
+        # Ask the question (not using "read -p" as it uses stderr not stdout)
+        echo -n "🤔 $1 [$prompt] "
+
+        # Read the answer (use /dev/tty in case stdin is redirected from somewhere else)
+        read reply </dev/tty
+
+        # Default?
+        if [ -z "$reply" ]; then
+            reply=$default
+        fi
+
+        # Check if the reply is valid
+        case "$reply" in
+            Y*|y*) return 0 ;;
+            N*|n*) return 1 ;;
+        esac
+
+    done
+}
+
+function info {
+  echo -e "ℹ️  $1"
+}
+function warn {
+  echo -e "\n⚠️  $1"
+}
 function working {
-  echo -e "\n✨  $1"
+  echo -e "\n🚧  $1"
 }
 function question {
-  echo -e "\n🛑  $1"
+  echo -e "\n🔴  $1"
 }
 function ssh {
   /usr/bin/ssh -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 "pi@$IP" "$1"
@@ -23,11 +69,14 @@ function scp {
   /usr/bin/scp -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$@" "pi@$IP:/home/pi"
 }
 
+question "Name of the Dashboard (e.g. \"chilipie-kiosk\") being built (used as hostname):"
+read DASHBOARD_NAME
+
 question "Enter version (e.g. \"1.2.3\") being built:"
 read TAG
 
 working "Updating version file"
-echo -e "$TAG\n\nhttps://github.com/futurice/chilipie-kiosk" > ../home/.chilipie-kiosk-version
+echo -e "$DASHBOARD_NAME-$TAG\n\nhttps://github.com/c0un7-z3r0/chilipie-kiosk" > ../home/.chilipie-kiosk-version
 
 working "Generating first-boot.html"
 if [ ! -d "node_modules" ]; then
@@ -35,7 +84,7 @@ if [ ! -d "node_modules" ]; then
 fi
 rm -rf md-input md-output
 mkdir md-input md-output
-cp ../docs/first-boot.md md-input
+sed "s/%%DASBOARD_NAME%%/${DASHBOARD_NAME}/g" ../docs/first-boot.md > md-input/first-boot.md
 ./node_modules/.bin/generate-md --layout github --input md-input/ --output md-output/
 ./node_modules/.bin/html-inline -i md-output/first-boot.html > ../home/first-boot.html
 rm -rf md-input md-output
@@ -54,11 +103,13 @@ working "Safely unmounting the card"
 diskutil unmountDisk "$DISK"
 
 working "Writing the card full of zeros (for security and compressibility reasons)"
-echo "This may take a long time"
-echo "You may be prompted for your password by sudo"
+info "This may take a long time"
+info "You may be prompted for your password by sudo"
 sudo dd bs=1m count="$SD_SIZE_ZERO" if=/dev/zero of="$DISK"
 
 question "Prepare baseline Raspbian:"
+echo "* Download Raspbian Lite (https://www.raspberrypi.org/downloads/raspbian/)"
+echo "* Download Etcher (https://www.balena.io/etcher/)"
 echo "* Flash Raspbian Lite with Etcher"
 echo "* Eject the SD card"
 echo "* Mount the card back"
@@ -70,13 +121,28 @@ cp -v "$BOOT_CMDLINE_TXT" "$BOOT_CMDLINE_TXT.backup"
 cp -v "$BOOT_CONFIG_TXT" "$BOOT_CONFIG_TXT.backup"
 
 working "Disabling automatic root filesystem expansion"
-echo "Updating: $BOOT_CMDLINE_TXT"
+info "Updating: $BOOT_CMDLINE_TXT"
 cat "$BOOT_CMDLINE_TXT" | sed "s#init=/usr/lib/raspi-config/init_resize.sh##" > temp
 mv temp "$BOOT_CMDLINE_TXT"
 
 working "Enabling SSH for first boot"
 # https://www.raspberrypi.org/documentation/remote-access/ssh/
 touch "/Volumes/$MOUNTED_BOOT_VOLUME/ssh"
+
+if ask "Do you want to configure WiFi?"; then
+    question "Enter WiFi SSID (a.k.a. \"WiFi Name\")"
+    read WIFI_SSID
+    question "Enter WiFi Password (e.g. \"password123\")"
+    read WIFI_PASSWORD
+
+    working "Copy wpa_supplicant.conf."
+    cp "../docs/wpa_supplicant.conf" "/Volumes/$MOUNTED_BOOT_VOLUME/wpa_supplicant.conf"
+    sed -i "" "s/%%WIFI_SSID%%/${WIFI_SSID}/g" /Volumes/$MOUNTED_BOOT_VOLUME/wpa_supplicant.conf
+    sed -i "" "s/%%WIFI_PASSWORD%%/${WIFI_PASSWORD}/g" /Volumes/$MOUNTED_BOOT_VOLUME/wpa_supplicant.conf
+
+else
+    warn "Skipping WiFi setup."
+fi
 
 working "Safely unmounting the card"
 diskutil unmountDisk "$DISK"
@@ -86,11 +152,11 @@ echo "* Eject the card"
 echo "* Connect your Pi to Ethernet"
 echo "* Boot the Pi from your card"
 echo "* Make note of the \"My IP address is\" message at the end of boot"
-echo "Enter the IP address:"
+question "Enter the IP address:"
 read IP
 
 working "Installing temporary SSH pubkey"
-echo -e "Password hint: \"raspberry\""
+info "Password hint: \"raspberry\""
 ssh "mkdir .ssh && echo '$PUBKEY' > .ssh/authorized_keys"
 
 working "Figuring out partition start"
@@ -105,14 +171,14 @@ working "Resizing the root partition on the Pi"
 ssh "echo -e 'd\n2\nn\np\n2\n$START\n+${SD_SIZE_REAL}M\ny\nw\n' | sudo fdisk /dev/mmcblk0"
 
 working "Setting hostname"
-# We want to do this right before reboot, so we don't get a lot of unnecessary complaints about "sudo: unable to resolve host chilipie-kiosk" (https://askubuntu.com/a/59517)
-ssh "sudo hostnamectl set-hostname chilipie-kiosk"
-ssh "sudo sed -i 's/raspberrypi/chilipie-kiosk/g' /etc/hosts"
+# We want to do this right before reboot, so we don't get a lot of unnecessary complaints about "sudo: unable to resolve host $DASHBOARD_NAME" (https://askubuntu.com/a/59517)
+ssh "sudo hostnamectl set-hostname $DASHBOARD_NAME"
+ssh "sudo sed -i 's/raspberrypi/$DASHBOARD_NAME/g' /etc/hosts"
 
 working "Rebooting the Pi"
 ssh "sudo reboot"
 
-echo "Waiting for host to come back up..."
+working "Waiting for host to come back up..."
 until ssh "echo OK"
 do
   sleep 1
@@ -189,13 +255,13 @@ question "Based on the above, SD card determined to be \"$DISK\" (should be e.g.
 read
 
 working "Making boot quieter (part 1)" # https://scribles.net/customizing-boot-up-screen-on-raspberry-pi/
-echo "Updating: $BOOT_CONFIG_TXT"
+info "Updating: $BOOT_CONFIG_TXT"
 sed -i "" "s/#disable_overscan=1/disable_overscan=1/g" "$BOOT_CONFIG_TXT"
 echo -e "\ndisable_splash=1" >> "$BOOT_CONFIG_TXT"
 
 working "Making boot quieter (part 2)" # https://scribles.net/customizing-boot-up-screen-on-raspberry-pi/
-echo "You may want to revert these changes if you ever need to debug the startup process"
-echo "Updating: $BOOT_CMDLINE_TXT"
+info "You may want to revert these changes if you ever need to debug the startup process"
+info "Updating: $BOOT_CMDLINE_TXT"
 cat "$BOOT_CMDLINE_TXT" \
   | sed 's/console=tty1/console=tty3/' \
   | sed 's/$/ splash plymouth.ignore-serial-consoles logo.nologo vt.global_cursor_default=0/' \
@@ -207,20 +273,20 @@ diskutil unmountDisk "$DISK"
 
 working "Dumping the image from the card"
 cd ..
-echo "This may take a long time"
-echo "You may be prompted for your password by sudo"
-sudo dd bs=1m count="$SD_SIZE_SAFE" if="$DISK" of="chilipie-kiosk-$TAG.img"
+info "This may take a long time"
+info "You may be prompted for your password by sudo"
+sudo dd bs=1m count="$SD_SIZE_SAFE" if="$DISK" of="$DASHBOARD_NAME-$TAG.img"
 
 working "Compressing image"
-COPYFILE_DISABLE=1 tar -zcvf chilipie-kiosk-$TAG.img.tar.gz chilipie-kiosk-$TAG.img
+COPYFILE_DISABLE=1 tar -zcvf $DASHBOARD_NAME-$TAG.img.tar.gz $DASHBOARD_NAME-$TAG.img
 
 working "Listing image sizes"
-du -hs chilipie-kiosk-$TAG.img*
+du -hs $DASHBOARD_NAME-$TAG.img*
 
 working "Calculating image hashes"
-openssl sha1 chilipie-kiosk-$TAG.img*
+openssl sha1 $DASHBOARD_NAME-$TAG.img*
 
 working "Software versions are:"
-echo "* Linux: \`$VERSION_LINUX\`"
-echo "* Kernel: \`$VERSION_KERNEL\`"
-echo "* Chromium: \`$VERSION_CHROMIUM\`"
+info "* Linux: \`$VERSION_LINUX\`"
+info "* Kernel: \`$VERSION_KERNEL\`"
+info "* Chromium: \`$VERSION_CHROMIUM\`"
